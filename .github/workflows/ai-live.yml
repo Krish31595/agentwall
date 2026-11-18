@@ -1,0 +1,56 @@
+name: ai-live
+# Live tests against a real model API: the gateway end to end, and the
+# replayed incident with the L1 reviewer and L2 investigator turned on.
+# Add the AGENTWALL_API_KEY secret to the "live-ai" environment (and the
+# AGENTWALL_API_BASE / AGENTWALL_LIVE_MODEL variables if you are not using the
+# default upstream). Without a key the job skips with a notice.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["agentwall/**", "examples/**", "tests/live_api.sh", ".github/workflows/ai-live.yml"]
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    environment: live-ai
+    timeout-minutes: 10
+    env:
+      AGENTWALL_API_KEY: ${{ secrets.AGENTWALL_API_KEY }}
+      AGENTWALL_API_BASE: ${{ vars.AGENTWALL_API_BASE }}
+      AGENTWALL_LIVE_MODEL: ${{ vars.AGENTWALL_LIVE_MODEL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e .
+      - name: Check for API key
+        id: key
+        run: |
+          if [ -z "$AGENTWALL_API_KEY" ]; then
+            echo "::notice::AGENTWALL_API_KEY is not set in the 'live-ai' environment; skipping live AI tests."
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Live gateway + proxy test
+        if: steps.key.outputs.present == 'true'
+        run: bash tests/live_api.sh
+      - name: Replay incident with AI layers (L1 + L2)
+        if: steps.key.outputs.present == 'true'
+        run: |
+          agentwall -p live/agentwall.toml replay examples/replay_injection_exfil.jsonl --ai \
+            --reviewer "${AGENTWALL_LIVE_MODEL:-openai/gpt-4o-mini}" --investigator "${AGENTWALL_LIVE_MODEL:-openai/gpt-4o-mini}" | tee replay.txt
+          grep -q "L1 reviewer" replay.txt || { echo "::error::L1 reviewer did not produce a verdict"; exit 1; }
+          grep -q "QUARANTINED" replay.txt || { echo "::error::incident was not quarantined"; exit 1; }
+          grep -q "L2 investigator" replay.txt || echo "::warning::L2 investigator was not reached (L1 severity below threshold or error)"
+      - name: Upload logs
+        if: always() && steps.key.outputs.present == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentwall-live-logs
+          path: |
+            live/*.jsonl
+            live/up.log
+            replay.txt

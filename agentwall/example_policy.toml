@@ -1,0 +1,42 @@
+# agentwall policy. Every agent runs in a segment; anything not allowed is denied.
+
+[defaults]
+mode = "enforce"                  # "learn" = allow everything and log what would be denied
+log_path = "agentwall.log.jsonl"
+upstream = "https://openrouter.ai/api/v1"   # any OpenAI-compatible API, e.g. https://api.openai.com/v1 or http://localhost:11434/v1
+proxy_listen = "127.0.0.1:8899"
+gateway_listen = "127.0.0.1:8898"
+
+[segments.coder]
+description = "Coding agent"
+token = "CHANGE_ME_CODER"
+egress = [
+  "pypi.org", "files.pythonhosted.org",
+  "github.com", "*.githubusercontent.com",
+  "registry.npmjs.org",
+]
+models = ["qwen/*", "deepseek/*", "moonshotai/*", "openai/gpt-4o-mini"]
+budget_usd = 2.00                 # per UTC day, enforced by the gateway
+redact_secrets = true
+
+[segments.research]
+description = "Read-only research agent"
+token = "CHANGE_ME_RESEARCH"
+egress = ["*.wikipedia.org", "arxiv.org", "export.arxiv.org"]
+models = ["openai/gpt-4o-mini", "google/gemini-*-flash*"]
+budget_usd = 0.50
+block_on_secret = true            # reject prompts containing secrets outright
+
+[threats]
+quarantine_score = 100            # risk points before a segment is quarantined
+quarantine_seconds = 900
+half_life_seconds = 600
+
+[monitor]
+enabled = true
+sample_rate = 0.05                # random share of clean traffic still reviewed (L1)
+l0_threshold = 3
+l2_threshold = 6
+reviewer_model = "openai/gpt-4o-mini"            # L1: cheap, sees flagged exchanges
+investigator_model = "anthropic/claude-sonnet-4.5"  # L2: stronger, sees transcript + network log
+# rules_file = "my_rules.toml"    # extra L0 rules: [[rule]] name, pattern, weight, where
